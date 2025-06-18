@@ -37,7 +37,6 @@ def adjust_column_width(ws):
         ws.column_dimensions[col_letter].width = max_length + 2
 
 def read_any_excel_or_tsv(raw_bytes, filename):
-    import io
     ext = filename.lower().split('.')[-1]
     try:
         if ext == "xlsx":
@@ -134,11 +133,21 @@ def is_excluded_email(email):
     )
 
 def tri_gagnants(df, nb_gagnants):
+    # Correction : détection robuste de la colonne "Civilité"
+    civ_col = None
+    for col in df.columns:
+        if remove_accents(col).strip().lower() == "civilite":
+            civ_col = col
+            break
+    if not civ_col:
+        st.error("❌ Le fichier ne contient aucune colonne 'Civilité' (ou équivalent). Colonnes trouvées :\n" + str(list(df.columns)))
+        return pd.DataFrame(), pd.DataFrame()
+
     df["__exclude__"] = df["Email"].apply(is_excluded_email)
     excl = df[df["__exclude__"]]
     main = df[~df["__exclude__"]]
-    femmes = main[main["Civilité"].str.lower() == "femme"]
-    hommes = main[main["Civilité"].str.lower() == "homme"]
+    femmes = main[main[civ_col].str.lower() == "femme"]
+    hommes = main[main[civ_col].str.lower() == "homme"]
     gagnants = pd.concat([femmes, hommes]).head(nb_gagnants)
     reservistes = pd.concat([main.drop(gagnants.index, errors="ignore"), excl])
     return gagnants.drop(columns="__exclude__"), reservistes.drop(columns="__exclude__")
@@ -187,7 +196,7 @@ if go and uploaded_files:
         raw = f.read()
         df = read_any_excel_or_tsv(raw, f.name)
         if df is None:
-            continue  # Passe au fichier suivant si erreur
+            continue
         partner_match = re.search(r"(OPT|GAG)\s*(.*?)\.", f.name, re.I)
         partenaire = partner_match.group(2).strip().upper() if partner_match else "PARTENAIRE"
         if traitement.startswith("OPT"):
