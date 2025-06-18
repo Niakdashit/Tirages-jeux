@@ -8,14 +8,21 @@ from zipfile import ZipFile
 from openpyxl.styles import PatternFill, Font, Border, Side
 from openpyxl.utils import get_column_letter
 from pathlib import Path
-import io
 
-# === FONCTIONS UTILITAIRES GÉNÉRIQUES ===
-
+# === UTILS ===
 def remove_accents(s):
     if isinstance(s, str):
         return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
     return s
+
+def find_column(df, targets):
+    for col in df.columns:
+        col_norm = remove_accents(str(col)).lower().replace(' ', '').replace('_','')
+        for t in targets:
+            t_norm = remove_accents(t).lower().replace(' ', '').replace('_','')
+            if col_norm.startswith(t_norm) or t_norm in col_norm:
+                return col
+    return None
 
 def format_phone_number(phone):
     if isinstance(phone, str) and phone.replace(".", "").isdigit():
@@ -36,31 +43,7 @@ def adjust_column_width(ws):
                 pass
         ws.column_dimensions[col_letter].width = max_length + 2
 
-def read_any_excel_or_tsv(raw_bytes, filename):
-    ext = filename.lower().split('.')[-1]
-    try:
-        if ext == "xlsx":
-            return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
-        elif ext == "xls":
-            try:
-                return pd.read_excel(io.BytesIO(raw_bytes), engine="xlrd")
-            except Exception:
-                try:
-                    return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
-                except Exception as e2:
-                    st.error(f"Erreur lecture .xls/TSV: {e2}")
-                    return None
-        elif ext == "tsv":
-            return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
-        else:
-            st.error("Format non supporté")
-            return None
-    except Exception as e:
-        st.error(f"Erreur lecture fichier : {e}")
-        return None
-
-# === TRAITEMENT OPT ===
-
+# === OPT PROCESSING ===
 def format_name_advanced(value):
     if isinstance(value, str):
         value = remove_accents(value)
@@ -68,20 +51,28 @@ def format_name_advanced(value):
     return value
 
 def process_opt(df, ref_bytes):
-    df.columns = [remove_accents(col) for col in df.columns]
+    df.columns = [remove_accents(str(col)) for col in df.columns]
     mapping = {
-        "Civilite": ["Civilite", "CivilitE", "Civ"],
+        "Civilite": ["Civilite", "CivilitE", "Civ", "Civilité"],
         "Nom": ["Nom"],
-        "Prenom": ["Prenom", "PrEnom"],
+        "Prenom": ["Prenom", "PrEnom", "Prénom"],
         "Adresse": ["Adresse"],
         "Code Postal": ["Code Postal", "CP"],
         "Ville": ["Ville"],
         "Pays": ["Pays"],
         "Email": ["Email", "Mail", "Courriel"]
     }
-    rename = {v: k for k, lst in mapping.items() for v in lst if v in df.columns}
+    # Remap columns to target names (tolérant)
+    rename = {}
+    for k, lst in mapping.items():
+        found = find_column(df, lst)
+        if found:
+            rename[found] = k
     df.rename(columns=rename, inplace=True)
-    df = df[list(rename.values())]
+    # Ne garde que les colonnes finales, dans l'ordre attendu
+    final_cols = [k for k in mapping if k in df.columns]
+    df = df[final_cols]
+
     for col in df.columns:
         if col != "Email":
             df[col] = df[col].astype(str).apply(format_name_advanced)
@@ -117,7 +108,7 @@ def process_opt(df, ref_bytes):
     out.seek(0)
     return out
 
-# === TRAITEMENT GAG ===
+# === GAG PROCESSING ===
 
 EXCLUDED_DOMAINS = ["free.fr", "sfr.fr", "bouygtel.fr", "orange.fr", "bbox.fr", "laposte.net", "numericable.fr", "neuf.fr"]
 KEYWORDS = ["concours", "jeu", "jeux"]
@@ -133,29 +124,43 @@ def is_excluded_email(email):
     )
 
 def tri_gagnants(df, nb_gagnants):
-    # Correction : détection robuste de la colonne "Civilité"
-    civ_col = None
-    for col in df.columns:
-        if remove_accents(col).strip().lower() == "civilite":
-            civ_col = col
-            break
+    civ_col = find_column(df, ["Civilite", "Civilité", "Civ", "Civilté"])
     if not civ_col:
         st.error("❌ Le fichier ne contient aucune colonne 'Civilité' (ou équivalent). Colonnes trouvées :\n" + str(list(df.columns)))
         return pd.DataFrame(), pd.DataFrame()
-
     df["__exclude__"] = df["Email"].apply(is_excluded_email)
     excl = df[df["__exclude__"]]
     main = df[~df["__exclude__"]]
-    femmes = main[main[civ_col].str.lower() == "femme"]
-    hommes = main[main[civ_col].str.lower() == "homme"]
+    femmes = main[main[civ_col].astype(str).str.lower().str.startswith("femme")]
+    hommes = main[main[civ_col].astype(str).str.lower().str.startswith("homme")]
     gagnants = pd.concat([femmes, hommes]).head(nb_gagnants)
     reservistes = pd.concat([main.drop(gagnants.index, errors="ignore"), excl])
     return gagnants.drop(columns="__exclude__"), reservistes.drop(columns="__exclude__")
 
 def process_gag(df, nb_gagnants):
-    df.columns = [remove_accents(col) for col in df.columns]
+    # Colonnes minimales recherchées
+    mapping = {
+        "Civilite": ["Civilite", "Civilité", "Civ", "Civilté"],
+        "Nom": ["Nom"],
+        "Prenom": ["Prenom", "Prénom", "PrEnom"],
+        "Adresse": ["Adresse"],
+        "Code Postal": ["Code Postal", "CP"],
+        "Ville": ["Ville"],
+        "Pays": ["Pays"],
+        "Tel": ["Tel", "Téléphone", "Numero de téléphone"],
+        "Email": ["Email", "Mail", "Courriel"]
+    }
+    # Remap columns to target names (tolérant)
+    rename = {}
+    for k, lst in mapping.items():
+        found = find_column(df, lst)
+        if found:
+            rename[found] = k
+    df.rename(columns=rename, inplace=True)
+    final_cols = [k for k in mapping if k in df.columns]
+    df = df[final_cols]
+    # Nettoyage
     df = df.applymap(remove_accents)
-    df.columns = [c.capitalize() for c in df.columns]
     for c in df.columns:
         if c.lower() != "email":
             df[c] = df[c].astype(str).apply(str.capitalize)
@@ -188,22 +193,55 @@ nb_gagnants = st.number_input("🎯 Nombre de gagnants (GAG)", min_value=1, step
 uploaded_files = st.file_uploader("📂 Fichiers à traiter", type=["xls", "xlsx", "tsv"], accept_multiple_files=True)
 go = st.button("🚀 Lancer le traitement")
 
+def read_any_excel_or_tsv(raw_bytes, filename):
+    import io
+    ext = filename.lower().split('.')[-1]
+    if ext == "xlsx":
+        try:
+            return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
+        except Exception as e:
+            st.error(f"Erreur lecture Excel: {e}")
+            return None
+    elif ext == "xls":
+        try:
+            return pd.read_excel(io.BytesIO(raw_bytes), engine="xlrd")
+        except Exception as e:
+            st.error(f"Erreur lecture XLS : {e}")
+            return None
+    elif ext == "tsv":
+        try:
+            return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
+        except Exception as e:
+            st.error(f"Erreur lecture TSV: {e}")
+            return None
+    else:
+        st.error("Format non supporté")
+        return None
+
 if go and uploaded_files:
     zip_buf = BytesIO()
     zip_writer = ZipFile(zip_buf, "w")
     ref_opt = Path("ref_opt.xlsx").read_bytes() if Path("ref_opt.xlsx").exists() else None
+    ref_gag = Path("ref_gag.xlsx").read_bytes() if Path("ref_gag.xlsx").exists() else None
     for f in uploaded_files:
         raw = f.read()
         df = read_any_excel_or_tsv(raw, f.name)
         if df is None:
             continue
-        partner_match = re.search(r"(OPT|GAG)\s*(.*?)\.", f.name, re.I)
+        partner_match = re.search(r"(OPT|GAG)[ _-]*([A-Z0-9À-ÿ'’ ]+)", f.name, re.I)
         partenaire = partner_match.group(2).strip().upper() if partner_match else "PARTENAIRE"
-        if traitement.startswith("OPT"):
+        if traitement.startswith("Opt"):
+            if not ref_opt:
+                st.error("Fichier de référence OPT manquant !")
+                continue
             output = process_opt(df, ref_opt)
+            final_name = f"OPT {prefix} - {partenaire} GJ 2025.xlsx"
         else:
+            if not ref_gag:
+                st.error("Fichier de référence GAG manquant !")
+                continue
             output = process_gag(df, nb_gagnants)
-        final_name = f"{traitement.split()[0]} {prefix} - {partenaire} GJ 2025.xlsx"
+            final_name = f"GAG {prefix} - {partenaire} GJ 2025.xlsx"
         st.download_button(f"⬇️ Télécharger : {final_name}", output.getvalue(), file_name=final_name)
         zip_writer.writestr(final_name, output.getvalue())
     zip_writer.close()
