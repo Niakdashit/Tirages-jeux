@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import openpyxl
@@ -9,6 +8,7 @@ from zipfile import ZipFile
 from openpyxl.styles import PatternFill, Font, Border, Side
 from openpyxl.utils import get_column_letter
 from pathlib import Path
+import io
 
 # === FONCTIONS UTILITAIRES GÉNÉRIQUES ===
 
@@ -35,6 +35,24 @@ def adjust_column_width(ws):
             except:
                 pass
         ws.column_dimensions[col_letter].width = max_length + 2
+
+def read_any_excel_or_tsv(raw_bytes, filename):
+    ext = filename.lower().split('.')[-1]
+    if ext in ["xls", "xlsx"]:
+        try:
+            return pd.read_excel(io.BytesIO(raw_bytes))
+        except Exception as e:
+            st.error(f"Erreur lecture Excel: {e}")
+            return None
+    elif ext == "tsv":
+        try:
+            return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
+        except Exception as e:
+            st.error(f"Erreur lecture TSV: {e}")
+            return None
+    else:
+        st.error("Format non supporté")
+        return None
 
 # === TRAITEMENT OPT ===
 
@@ -151,7 +169,7 @@ st.title("📊 Traitement fichiers OPT / GAG")
 traitement = st.selectbox("Traitement :", ["Opt-in partenaire (OPT)", "Tirages gagnants (GAG)"])
 marque = st.radio("Marque :", ["FemmeActuelle.fr", "CuisineActuelle.fr"])
 prefix = "FA.FR" if marque == "FemmeActuelle.fr" else "CA.FR"
-nb_gagnants = st.number_input("🎯 Nombre de gagnants (GAG)", min_value=1, step=1, value=10) if traitement.startswith("GAG") else None
+nb_gagnants = st.number_input("🎯 Nombre de gagnants (GAG)", min_value=1, step=1, value=10) if traitement.startswith("Tirages") else None
 uploaded_files = st.file_uploader("📂 Fichiers à traiter", type=["xls", "xlsx", "tsv"], accept_multiple_files=True)
 go = st.button("🚀 Lancer le traitement")
 
@@ -161,10 +179,9 @@ if go and uploaded_files:
     ref_opt = Path("ref_opt.xlsx").read_bytes() if Path("ref_opt.xlsx").exists() else None
     for f in uploaded_files:
         raw = f.read()
-        try:
-            df = pd.read_excel(BytesIO(raw))
-        except:
-            df = pd.read_csv(BytesIO(raw), sep="\t", encoding="utf-8", dtype=str)
+        df = read_any_excel_or_tsv(raw, f.name)
+        if df is None:
+            continue  # Passe au fichier suivant si erreur
         partner_match = re.search(r"(OPT|GAG)\s*(.*?)\.", f.name, re.I)
         partenaire = partner_match.group(2).strip().upper() if partner_match else "PARTENAIRE"
         if traitement.startswith("OPT"):
