@@ -38,11 +38,17 @@ def adjust_column_width(ws):
 
 def read_any_excel_or_tsv(raw_bytes, filename):
     ext = filename.lower().split('.')[-1]
-    if ext in ["xls", "xlsx"]:
+    if ext == "xlsx":
         try:
-            return pd.read_excel(io.BytesIO(raw_bytes))
+            return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
         except Exception as e:
-            st.error(f"Erreur lecture Excel: {e}")
+            st.error(f"Erreur lecture XLSX : {e}")
+            return None
+    elif ext == "xls":
+        try:
+            return pd.read_excel(io.BytesIO(raw_bytes), engine="xlrd")
+        except Exception as e:
+            st.error(f"Erreur lecture XLS : {e}")
             return None
     elif ext == "tsv":
         try:
