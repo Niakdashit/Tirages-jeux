@@ -37,27 +37,27 @@ def adjust_column_width(ws):
         ws.column_dimensions[col_letter].width = max_length + 2
 
 def read_any_excel_or_tsv(raw_bytes, filename):
+    import io
     ext = filename.lower().split('.')[-1]
-    if ext == "xlsx":
-        try:
+    try:
+        if ext == "xlsx":
             return pd.read_excel(io.BytesIO(raw_bytes), engine="openpyxl")
-        except Exception as e:
-            st.error(f"Erreur lecture XLSX : {e}")
-            return None
-    elif ext == "xls":
-        try:
-            return pd.read_excel(io.BytesIO(raw_bytes), engine="xlrd")
-        except Exception as e:
-            st.error(f"Erreur lecture XLS : {e}")
-            return None
-    elif ext == "tsv":
-        try:
+        elif ext == "xls":
+            try:
+                return pd.read_excel(io.BytesIO(raw_bytes), engine="xlrd")
+            except Exception:
+                try:
+                    return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
+                except Exception as e2:
+                    st.error(f"Erreur lecture .xls/TSV: {e2}")
+                    return None
+        elif ext == "tsv":
             return pd.read_csv(io.BytesIO(raw_bytes), sep="\t", encoding="ISO-8859-1", dtype=str)
-        except Exception as e:
-            st.error(f"Erreur lecture TSV: {e}")
+        else:
+            st.error("Format non supporté")
             return None
-    else:
-        st.error("Format non supporté")
+    except Exception as e:
+        st.error(f"Erreur lecture fichier : {e}")
         return None
 
 # === TRAITEMENT OPT ===
